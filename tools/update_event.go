@@ -21,15 +21,7 @@ func UpdateEventHandler(accounts *AccountClients) func(context.Context, mcp.Call
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		// Extract required parameters
-		eventID, ok := args["eventId"].(string)
-		if !ok || eventID == "" {
-			return mcp.NewToolResultError("eventId is required"), nil
-		}
-
-		if err := caldav.ValidateEventID(eventID); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid eventId: %v", err)), nil
-		}
+		eventID, _ := args["eventId"].(string)
 
 		calendarID, _ := args["calendarId"].(string)
 		if calendarID == "" {
@@ -45,7 +37,10 @@ func UpdateEventHandler(accounts *AccountClients) func(context.Context, mcp.Call
 		}
 
 		// Build event path
-		eventPath := client.GetEventPath(calendarID, eventID)
+		eventPath, err := resolveEventResource(client, calendarID, args)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		// Build update with pointer fields
 		update := &caldav.EventUpdate{}
@@ -89,6 +84,18 @@ func UpdateEventHandler(accounts *AccountClients) func(context.Context, mcp.Call
 			return mcp.NewToolResultError("endTime must be after startTime"), nil
 		}
 
+		alerts, err := parseAlerts(args)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		update.Alerts = alerts
+		if raw, exists := args["recurrence"]; exists {
+			rule, ok := raw.(string)
+			if !ok {
+				return mcp.NewToolResultError("recurrence must be a string"), nil
+			}
+			update.Recurrence = &rule
+		}
 		// Update event
 		err = client.UpdateEvent(ctx, eventPath, update)
 		if err != nil {
@@ -97,9 +104,10 @@ func UpdateEventHandler(accounts *AccountClients) func(context.Context, mcp.Call
 
 		// Format response
 		response := map[string]interface{}{
-			"success": true,
-			"eventId": eventID,
-			"message": "Event updated successfully",
+			"success":   true,
+			"eventId":   eventID,
+			"eventPath": eventPath,
+			"message":   "Event updated successfully",
 		}
 
 		jsonData, err := json.MarshalIndent(response, "", "  ")

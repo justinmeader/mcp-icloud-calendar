@@ -551,6 +551,8 @@ func TestUpdateEvent_UpdateTimes(t *testing.T) {
 	existingEvent := ical.NewEvent()
 	existingEvent.Props.SetText(ical.PropUID, "uid-1")
 	existingEvent.Props.SetText(ical.PropSummary, "Meeting")
+	existingEvent.Props.SetDateTime(ical.PropDateTimeStart, time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC))
+	existingEvent.Props.SetDateTime(ical.PropDateTimeEnd, time.Date(2024, 1, 1, 11, 0, 0, 0, time.UTC))
 
 	existingCal := ical.NewCalendar()
 	existingCal.Children = append(existingCal.Children, existingEvent.Component)

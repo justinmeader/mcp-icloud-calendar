@@ -1,10 +1,12 @@
 package caldav
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -26,6 +28,7 @@ const (
 // Client wraps the CalDAV client with iCloud-specific functionality
 type Client struct {
 	backend         backend
+	httpDoer        webdav.HTTPClient // raw transport for requests go-webdav cannot express
 	calendarHomeSet string
 	homeSetOnce     sync.Once
 	homeSetErr      error
@@ -41,21 +44,35 @@ type Calendar struct {
 
 // Event represents a calendar event
 type Event struct {
-	ID          string     `json:"id"`
-	Path        string     `json:"path"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	Location    string     `json:"location"`
-	StartTime   time.Time  `json:"startTime"`
-	EndTime     time.Time  `json:"endTime"`
-	Recurrence  string     `json:"recurrence,omitempty"`
-	Timezone    string     `json:"timezone"`
-	Attendees   []Attendee `json:"attendees,omitempty"`
+	HasRecurrenceExceptions bool         `json:"hasRecurrenceExceptions,omitempty"`
+	Alerts                  []Alert      `json:"alerts"`
+	AllDay                  bool         `json:"allDay"`
+	Floating                bool         `json:"floating"`
+	StartDate               string       `json:"startDate,omitempty"`
+	EndDate                 string       `json:"endDate,omitempty"`
+	URL                     string       `json:"url,omitempty"`
+	Attachments             []Attachment `json:"attachments,omitempty"`
+	Status                  string       `json:"status,omitempty"`
+	Transparency            string       `json:"transparency,omitempty"`
+	Organizer               string       `json:"organizer,omitempty"`
+	RecurrenceID            string       `json:"recurrenceId,omitempty"`
+	ID                      string       `json:"id"`
+	Path                    string       `json:"path"`
+	Title                   string       `json:"title"`
+	Description             string       `json:"description"`
+	Location                string       `json:"location"`
+	StartTime               time.Time    `json:"startTime"`
+	EndTime                 time.Time    `json:"endTime"`
+	Recurrence              string       `json:"recurrence,omitempty"`
+	Timezone                string       `json:"timezone"`
+	Attendees               []Attendee   `json:"attendees,omitempty"`
 }
 
 // EventUpdate represents fields to update on an event.
 // nil pointer = don't change, non-nil empty string = clear field.
 type EventUpdate struct {
+	Recurrence  *string
+	Alerts      *[]Alert
 	Title       *string
 	Description *string
 	Location    *string
@@ -126,7 +143,7 @@ func NewClient(email, password string, opts ...ClientOptions) (*Client, error) {
 
 	httpClient := &http.Client{
 		Timeout:   opt.Timeout,
-		Transport: transport,
+		Transport: &debugTransport{inner: transport},
 	}
 
 	// Create basic auth HTTP client
@@ -139,7 +156,8 @@ func NewClient(email, password string, opts ...ClientOptions) (*Client, error) {
 	}
 
 	return &Client{
-		backend: caldavClient,
+		backend:  caldavClient,
+		httpDoer: authClient,
 	}, nil
 }
 
@@ -197,14 +215,14 @@ func (c *Client) ListCalendars(ctx context.Context) ([]Calendar, error) {
 func (c *Client) SearchEvents(ctx context.Context, calendarPath string, startTime, endTime *time.Time) ([]Event, error) {
 	// Build the query
 	query := &caldav.CalendarQuery{
+		// iCloud answers 412 Precondition Failed when calendar-data projects
+		// into nested components (VEVENT allprop). Requesting the complete
+		// VCALENDAR (allprop + allcomp) is accepted — verified live against
+		// caldav.icloud.com with a hand-built REPORT, 2026-07-17.
 		CompRequest: caldav.CalendarCompRequest{
-			Name: "VCALENDAR",
-			Comps: []caldav.CalendarCompRequest{
-				{
-					Name:     "VEVENT",
-					AllProps: true,
-				},
-			},
+			Name:     "VCALENDAR",
+			AllProps: true,
+			AllComps: true,
 		},
 	}
 
@@ -229,7 +247,16 @@ func (c *Client) SearchEvents(ctx context.Context, calendarPath string, startTim
 		query.CompFilter = compFilter
 	}
 
-	calendarObjects, err := c.backend.QueryCalendar(ctx, calendarPath, query)
+	// iCloud only returns complete calendar objects for an empty
+	// <C:calendar-data/> projection, which go-webdav cannot express; use the
+	// raw REPORT when a live transport is available (tests use the backend).
+	var calendarObjects []caldav.CalendarObject
+	var err error
+	if c.httpDoer != nil {
+		calendarObjects, err = c.rawQueryCalendar(ctx, calendarPath, startTime, endTime)
+	} else {
+		calendarObjects, err = c.backend.QueryCalendar(ctx, calendarPath, query)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query calendar: %w", err)
 	}
@@ -249,6 +276,22 @@ func (c *Client) SearchEvents(ctx context.Context, calendarPath string, startTim
 
 // CreateEvent creates a new event in the specified calendar
 func (c *Client) CreateEvent(ctx context.Context, calendarPath string, event *Event) (string, error) {
+	if err := ValidateAlerts(event.Alerts); err != nil {
+		return "", err
+	}
+
+	startTime, endTime := event.StartTime, event.EndTime
+	if event.Recurrence != "" && event.Timezone != "" {
+		loc, err := time.LoadLocation(event.Timezone)
+		if err != nil {
+			return "", fmt.Errorf("invalid recurrence timezone: %w", err)
+		}
+		startTime, endTime = startTime.In(loc), endTime.In(loc)
+	}
+
+	if err := ValidateRecurrence(event.Recurrence, startTime); err != nil {
+		return "", err
+	}
 	// Create iCalendar object
 	cal := ical.NewCalendar()
 	cal.Props.SetText(ical.PropVersion, "2.0")
@@ -274,8 +317,8 @@ func (c *Client) CreateEvent(ctx context.Context, calendarPath string, event *Ev
 		vevent.Props.SetText(ical.PropLocation, event.Location)
 	}
 
-	vevent.Props.SetDateTime(ical.PropDateTimeStart, event.StartTime)
-	vevent.Props.SetDateTime(ical.PropDateTimeEnd, event.EndTime)
+	vevent.Props.SetDateTime(ical.PropDateTimeStart, startTime)
+	vevent.Props.SetDateTime(ical.PropDateTimeEnd, endTime)
 	vevent.Props.SetDateTime(ical.PropDateTimeStamp, time.Now())
 
 	// Add attendees
@@ -301,6 +344,10 @@ func (c *Client) CreateEvent(ctx context.Context, calendarPath string, event *Ev
 		vevent.Props["ATTENDEE"] = append(vevent.Props["ATTENDEE"], prop)
 	}
 
+	if event.Recurrence != "" {
+		vevent.Props.Set(&ical.Prop{Name: "RRULE", Value: event.Recurrence})
+	}
+	replaceAlerts(vevent.Component, event.Alerts)
 	cal.Children = append(cal.Children, vevent.Component)
 
 	// Create the event path
@@ -318,6 +365,11 @@ func (c *Client) CreateEvent(ctx context.Context, calendarPath string, event *Ev
 // UpdateEvent updates an existing event using pointer fields.
 // nil pointer = don't change, non-nil empty string = clear the field.
 func (c *Client) UpdateEvent(ctx context.Context, eventPath string, update *EventUpdate) error {
+	if update.Alerts != nil {
+		if err := ValidateAlerts(*update.Alerts); err != nil {
+			return err
+		}
+	}
 	// Get the existing event
 	existingObj, err := c.backend.GetCalendarObject(ctx, eventPath)
 	if err != nil {
@@ -325,17 +377,49 @@ func (c *Client) UpdateEvent(ctx context.Context, eventPath string, update *Even
 	}
 
 	// Find the VEVENT component
-	var vevent *ical.Event
-	for _, child := range existingObj.Data.Children {
-		if child.Name == ical.CompEvent {
-			vevent = ical.NewEvent()
-			vevent.Component = child
-			break
-		}
-	}
+	vevent := primaryEvent(existingObj.Data)
 
 	if vevent == nil {
 		return fmt.Errorf("no VEVENT component found in calendar object")
+	}
+
+	if update.Recurrence != nil || update.StartTime != nil {
+		rule := ""
+		if prop := vevent.Props.Get("RRULE"); prop != nil {
+			rule = prop.Value
+		}
+		if update.Recurrence != nil {
+			rule = *update.Recurrence
+			if hasRecurrenceExceptions(existingObj.Data) {
+				return fmt.Errorf("recurrence changes on a series with exceptions or detached occurrences are unsupported")
+			}
+		}
+		prop := vevent.Props.Get("DTSTART")
+		if prop == nil {
+			return fmt.Errorf("event has no DTSTART")
+		}
+		start, err := prop.DateTime(time.UTC)
+		if err != nil {
+			return fmt.Errorf("cannot validate recurrence start: %w", err)
+		}
+		if update.StartTime != nil {
+			start = *update.StartTime
+		}
+		if err := ValidateRecurrence(rule, start); err != nil {
+			return err
+		}
+	}
+
+	// Time/date and occurrence-scope writes need a dedicated contract. Do not convert silently.
+	if vevent.Props.Get("RECURRENCE-ID") != nil {
+		return fmt.Errorf("editing detached occurrences is not supported")
+	}
+	if update.StartTime != nil || update.EndTime != nil {
+		if prop := vevent.Props.Get("DTSTART"); prop != nil {
+			if prop.Params.Get("VALUE") == "DATE" || prop.Params.Get("TZID") != "" || !strings.HasSuffix(prop.Value, "Z") {
+				return fmt.Errorf("time edits on all-day, floating or named-time-zone events are not supported; other fields and alerts may be edited")
+			}
+		}
 	}
 
 	// Update properties: nil = skip, empty string = delete property
@@ -371,6 +455,16 @@ func (c *Client) UpdateEvent(ctx context.Context, eventPath string, update *Even
 		vevent.Props.SetDateTime(ical.PropDateTimeEnd, *update.EndTime)
 	}
 
+	if update.Alerts != nil {
+		replaceAlerts(vevent.Component, *update.Alerts)
+	}
+	if update.Recurrence != nil {
+		if *update.Recurrence == "" {
+			delete(vevent.Props, "RRULE")
+		} else {
+			vevent.Props.Set(&ical.Prop{Name: "RRULE", Value: *update.Recurrence})
+		}
+	}
 	// Update timestamp
 	vevent.Props.SetDateTime(ical.PropDateTimeStamp, time.Now())
 
@@ -404,14 +498,7 @@ func (c *Client) GetEventPath(calendarPath, eventID string) string {
 // parseCalendarObject converts a CalDAV calendar object to our Event struct
 func (c *Client) parseCalendarObject(obj *caldav.CalendarObject) (*Event, error) {
 	// Find the VEVENT component
-	var vevent *ical.Event
-	for _, child := range obj.Data.Children {
-		if child.Name == ical.CompEvent {
-			vevent = ical.NewEvent()
-			vevent.Component = child
-			break
-		}
-	}
+	vevent := primaryEvent(obj.Data)
 
 	if vevent == nil {
 		return nil, fmt.Errorf("no VEVENT component found")
@@ -486,9 +573,59 @@ func (c *Client) parseCalendarObject(obj *caldav.CalendarObject) (*Event, error)
 		}
 	}
 
+	event.HasRecurrenceExceptions = hasRecurrenceExceptions(obj.Data)
+	readExtraFields(event, vevent.Component)
 	if event.Timezone == "" {
 		event.Timezone = "UTC"
 	}
 
 	return event, nil
+}
+
+// debugTransport logs REPORT requests and non-2xx responses to stderr (temporary diagnostic).
+type debugTransport struct{ inner http.RoundTripper }
+
+func (d *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == "REPORT" {
+		var body []byte
+		if req.Body != nil {
+			body, _ = io.ReadAll(req.Body)
+			req.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		fmt.Fprintf(os.Stderr, "DEBUG-REPORT url=%s depth=%q ctype=%q body=%s\n", req.URL.String(), req.Header.Get("Depth"), req.Header.Get("Content-Type"), string(body))
+	}
+	resp, err := d.inner.RoundTrip(req)
+	if err == nil && req.Method == "REPORT" && resp.StatusCode >= 400 {
+		rb, _ := io.ReadAll(resp.Body)
+		resp.Body = io.NopCloser(bytes.NewReader(rb))
+		fmt.Fprintf(os.Stderr, "DEBUG-REPORT-RESP status=%d body=%s\n", resp.StatusCode, string(rb))
+	}
+	return resp, err
+}
+
+// primaryEvent prefers the series master, even when detached overrides appear first.
+func primaryEvent(cal *ical.Calendar) *ical.Event {
+	if cal == nil {
+		return nil
+	}
+	var first *ical.Component
+	for _, child := range cal.Children {
+		if child.Name != ical.CompEvent {
+			continue
+		}
+		if first == nil {
+			first = child
+		}
+		if child.Props.Get("RECURRENCE-ID") == nil {
+			event := ical.NewEvent()
+			event.Component = child
+			return event
+		}
+	}
+	if first != nil {
+		event := ical.NewEvent()
+		event.Component = first
+		return event
+	}
+	return nil
 }

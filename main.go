@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	_ "time/tzdata"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -124,7 +125,7 @@ func main() {
 
 	// Register search_events tool
 	searchEventsTool := mcp.NewTool("search_events",
-		mcp.WithDescription("Search for calendar events within a date range. Returns paginated results with event id, title, description, location, startTime, endTime, recurrence, timezone, and attendees. Use list_calendars first to discover valid calendarId values."),
+		mcp.WithDescription("Search for calendar events within a date range. Returns paginated results with event id, title, description, location, startTime, endTime, recurrence, timezone, attendees, alerts, all-day/date and floating indicators, URL, attachments, status, transparency, organizer and recurrence ID. Use list_calendars first to discover valid calendarId values."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -160,7 +161,11 @@ func main() {
 
 	// Register create_event tool
 	createEventTool := mcp.NewTool("create_event",
-		mcp.WithDescription("Create a new calendar event on iCloud. Returns the created event's unique ID on success. Use list_calendars first to discover valid calendarId values."),
+		mcp.WithString("recurrenceTimezone", mcp.Description("IANA zone for a new recurring event. Defaults to server TZ environment variable, or UTC if unset. Preserves local clock through DST. Only used at recurring-event creation; no timezone-edit feature.")),
+		mcp.WithString("recurrence", mcp.Description("RRULE value: FREQ=DAILY/WEEKLY/MONTHLY/YEARLY; optional INTERVAL, BYDAY, BYMONTHDAY, BYMONTH, BYSETPOS, WKST, and COUNT or UNTIL. Example FREQ=WEEKLY;BYDAY=MO,WE;COUNT=12. Omit to preserve; empty string removes recurrence. Applies to whole series only; changes to series with exceptions are rejected.")),
+		mcp.WithString("alerts", mcp.Description("JSON array of DISPLAY reminders: [{\"action\":\"DISPLAY\",\"trigger\":\"-PT15M\",\"related\":\"START\",\"description\":\"Reminder\"}]. Trigger is an iCalendar duration. Omit to preserve existing alarms; [] explicitly removes all alarms. Replacement affects the master event only; detached occurrences are not edited. Absolute/repeating and EMAIL/AUDIO alarm writes are unsupported.")),
+
+		mcp.WithDescription("Create a new calendar event on iCloud, optionally with daily, weekly, monthly or yearly recurrence. New recurring events follow the calendar clock through DST. Returns the created event's unique ID on success. Use list_calendars first to discover valid calendarId values."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(false),
@@ -197,15 +202,18 @@ func main() {
 
 	// Register update_event tool
 	updateEventTool := mcp.NewTool("update_event",
-		mcp.WithDescription("Update specific fields of an existing calendar event. Only include the fields you want to change. Omitted fields remain unchanged. Set a field to an empty string to clear it. Use search_events first to find the event's id."),
+		mcp.WithString("recurrence", mcp.Description("RRULE value: FREQ=DAILY/WEEKLY/MONTHLY/YEARLY; optional INTERVAL, BYDAY, BYMONTHDAY, BYMONTH, BYSETPOS, WKST, and COUNT or UNTIL. Example FREQ=WEEKLY;BYDAY=MO,WE;COUNT=12. Omit to preserve; empty string removes recurrence. Applies to whole series only; changes to series with exceptions are rejected.")),
+		mcp.WithString("alerts", mcp.Description("JSON array of DISPLAY reminders: [{\"action\":\"DISPLAY\",\"trigger\":\"-PT15M\",\"related\":\"START\",\"description\":\"Reminder\"}]. Trigger is an iCalendar duration. Omit to preserve existing alarms; [] explicitly removes all alarms. Replacement affects the master event only; detached occurrences are not edited. Absolute/repeating and EMAIL/AUDIO alarm writes are unsupported.")),
+
+		mcp.WithDescription("Update specific fields or the whole-series recurrence schedule of an existing calendar event. Empty recurrence removes the schedule; rule changes on series with exceptions are rejected. Only include the fields you want to change. Omitted fields remain unchanged. Set a field to an empty string to clear it. Use search_events first to find the event's id."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("account",
 			mcp.Description("Account name for multi-account setups. Omit to use the default account."),
 		),
+		mcp.WithString("eventPath", mcp.Description("Exact resource path from search_events or get_event; preferred when UID differs from filename. Supply eventPath or eventId.")),
 		mcp.WithString("eventId",
-			mcp.Required(),
 			mcp.Description("Unique event ID (UID) from a previous search_events result."),
 		),
 		mcp.WithString("calendarId",
@@ -221,7 +229,7 @@ func main() {
 			mcp.Description("Updated event location. Omit to keep the current location. Set to empty string to clear."),
 		),
 		mcp.WithString("startTime",
-			mcp.Description("Updated start time in RFC 3339 format (e.g., '2025-03-15T14:30:00Z'). Omit to keep the current start time."),
+			mcp.Description("Updated start time in RFC 3339 format (e.g., '2025-03-15T14:30:00Z'). Omit to keep the current start time. Time edits on all-day, floating and named-time-zone events are rejected; alert edits preserve these types."),
 		),
 		mcp.WithString("endTime",
 			mcp.Description("Updated end time in RFC 3339 format (e.g., '2025-03-15T16:30:00Z'). Omit to keep the current end time. Must be after startTime if both are provided."),
@@ -260,6 +268,17 @@ func main() {
 		),
 	)
 	s.AddTool(listCalendarsTool, tools.ListCalendarsHandler(accountClients))
+
+	// Direct event lookup uses the returned resource path because a UID can differ from its filename.
+	getEventTool := mcp.NewTool("get_event",
+		mcp.WithDescription("Read the stored event with alerts, all-day/date and floating-time indicators, URL, attachments, status, transparency, organizer and recurrence ID. Prefer eventPath from search_events: the UID may differ from its resource filename. Device notification settings/history are not available. Reads the master component; detached occurrence editing is unsupported."),
+		mcp.WithReadOnlyHintAnnotation(true), mcp.WithDestructiveHintAnnotation(false), mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithString("account", mcp.Description("Account name; omit for default.")),
+		mcp.WithString("calendarId", mcp.Description("Calendar path from list_calendars; uses configured default if omitted.")),
+		mcp.WithString("eventPath", mcp.Description("Exact event resource path from search_events; must belong to calendarId.")),
+		mcp.WithString("eventId", mcp.Description("Fallback UID when it matches the resource filename. Supply eventPath or eventId.")),
+	)
+	s.AddTool(getEventTool, tools.GetEventHandler(accountClients))
 
 	// Start health server if configured
 	var healthServer *health.Server

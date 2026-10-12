@@ -18,3 +18,8 @@ type CalendarService interface {
 
 // Compile-time assertion that Client implements CalendarService.
 var _ CalendarService = (*Client)(nil)
+
+// EventReader is an optional direct-read capability for calendar services.
+type EventReader interface {
+	GetEvent(context.Context, string) (*Event, error)
+}

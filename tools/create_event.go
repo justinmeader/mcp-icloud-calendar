@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -78,9 +79,37 @@ func CreateEventHandler(accounts *AccountClients) func(context.Context, mcp.Call
 			}
 		}
 
+		alerts, err := parseAlerts(args)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		recurrence := ""
+		if raw, exists := args["recurrence"]; exists {
+			var ok bool
+			recurrence, ok = raw.(string)
+			if !ok {
+				return mcp.NewToolResultError("recurrence must be a string"), nil
+			}
+		}
+		zone := ""
+		if recurrence != "" {
+			zone = os.Getenv("TZ")
+			if zone == "" {
+				zone = "UTC"
+			}
+			if raw, exists := args["recurrenceTimezone"]; exists {
+				var ok bool
+				zone, ok = raw.(string)
+				if !ok || zone == "" {
+					return mcp.NewToolResultError("recurrenceTimezone must be an IANA zone name"), nil
+				}
+			}
+		}
 		// Create event
 		event := &caldav.Event{
 			Title:       title,
+			Recurrence:  recurrence,
+			Timezone:    zone,
 			Description: description,
 			Location:    location,
 			StartTime:   startTime,
@@ -88,6 +117,9 @@ func CreateEventHandler(accounts *AccountClients) func(context.Context, mcp.Call
 			Attendees:   attendees,
 		}
 
+		if alerts != nil {
+			event.Alerts = *alerts
+		}
 		eventID, err := client.CreateEvent(ctx, calendarID, event)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to create event: %v", err)), nil

@@ -22,7 +22,9 @@ func TestEnhancementGetEventResourcePath(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/calendar")
-		fmt.Fprint(w, "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//fixture//EN\r\nBEGIN:VEVENT\r\nUID:different-uid\r\nDTSTAMP:20200101T000000Z\r\nDTSTART:20200102T100000Z\r\nDTEND:20200102T110000Z\r\nSUMMARY:Read fixture\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+		if _, err := fmt.Fprint(w, "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//fixture//EN\r\nBEGIN:VEVENT\r\nUID:different-uid\r\nDTSTAMP:20200101T000000Z\r\nDTSTART:20200102T100000Z\r\nDTEND:20200102T110000Z\r\nSUMMARY:Read fixture\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer ts.Close()
 	transport, err := ext.NewClient(ts.Client(), ts.URL)
@@ -70,7 +72,9 @@ func TestEnhancementUpdateByResourcePath(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/calendar")
-		fmt.Fprint(w, data)
+		if _, err := fmt.Fprint(w, data); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer ts.Close()
 	transport, _ := ext.NewClient(ts.Client(), ts.URL)

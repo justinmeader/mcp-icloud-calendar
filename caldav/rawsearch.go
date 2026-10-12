@@ -53,7 +53,7 @@ func (c *Client) rawQueryCalendar(ctx context.Context, calendarPath string, star
 	if err != nil {
 		return nil, fmt.Errorf("calendar-query request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // The read result is authoritative; closing is cleanup.
 	if resp.StatusCode != http.StatusMultiStatus {
 		return nil, fmt.Errorf("%d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}

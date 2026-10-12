@@ -36,10 +36,19 @@ New recurring creation accepts an IANA zone; its default is TZ, or UTC if unset.
 
 ## Upstream process
 
-Contribution-branch verification on October 12, 2026: go test -race with coverage,
-go vet and go build passed using Go 1.25.7. Total statement coverage is 77.6%,
-below upstream's 80% gate. Lint and vulnerability scanning have not yet been run
-for this candidate. This branch is not PR-ready.
+Contribution-branch verification on October 12, 2026: race tests, vet, build and
+golangci-lint 2.11.3 pass. Total statement coverage is 84.4%, above the 80% gate.
+Go 1.26.9 is selected in the toolchain, CI, release and Docker builder settings;
+jsonparser 1.1.2 and x/sys 0.44.0 address scanner findings. Govulncheck 1.9.0
+reports no vulnerabilities, including verbose package/module checks. Regression
+tests cover the actual REPORT projection and read decorators. Temporary diagnostic
+logging of REPORT bodies was removed. Gitleaks working-tree and full-history scans
+found no credentials; the added changes contain no private deployment coordinates.
+Two narrow gosec annotations explain existing operator-configured file reads;
+client-supplied resource paths continue to be validated.
+
+These results supersede the initial 77.6% staging result. The contribution still
+awaits upstream scope discussion and has not been submitted or accepted as a PR.
 
 The upstream README asks for an issue discussing larger changes before a PR.
 Use that discussion to agree on scope and split this staging branch into focused

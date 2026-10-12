@@ -49,7 +49,9 @@ func eventJSON(t *testing.T, c *Client, b *memoryBackend) map[string]interface{}
 		t.Fatal(err)
 	}
 	var v map[string]interface{}
-	json.Unmarshal(raw, &v)
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
 	return v
 }
 func TestEnhancementReadFields(t *testing.T) {
@@ -176,7 +178,9 @@ func TestEnhancementUpdateAlertSemantics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c, b := fixtureClient(t)
 			var u EventUpdate
-			json.Unmarshal([]byte(tc.input), &u)
+			if err := json.Unmarshal([]byte(tc.input), &u); err != nil {
+				t.Fatal(err)
+			}
 			if err := c.UpdateEvent(context.Background(), "/cal/fixture.ics", &u); err != nil {
 				t.Fatal(err)
 			}

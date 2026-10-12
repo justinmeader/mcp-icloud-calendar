@@ -11,7 +11,9 @@ import (
 func TestRecurrenceCreateAndClock(t *testing.T) {
 	c, b := fixtureClient(t)
 	var e Event
-	json.Unmarshal([]byte(`{"title":"Repeat","startTime":"2020-03-07T14:00:00Z","endTime":"2020-03-07T15:00:00Z","timezone":"America/New_York","recurrence":"FREQ=DAILY;COUNT=3"}`), &e)
+	if err := json.Unmarshal([]byte(`{"title":"Repeat","startTime":"2020-03-07T14:00:00Z","endTime":"2020-03-07T15:00:00Z","timezone":"America/New_York","recurrence":"FREQ=DAILY;COUNT=3"}`), &e); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c.CreateEvent(context.Background(), "/cal/", &e); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +47,9 @@ func TestRecurrenceUpdateAndClear(t *testing.T) {
 	for _, input := range []string{`{"Recurrence":"FREQ=WEEKLY;COUNT=3"}`, `{"Recurrence":""}`} {
 		c, b := fixtureClient(t)
 		var u EventUpdate
-		json.Unmarshal([]byte(input), &u)
+		if err := json.Unmarshal([]byte(input), &u); err != nil {
+			t.Fatal(err)
+		}
 		if err := c.UpdateEvent(context.Background(), "/cal/fixture.ics", &u); err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +72,9 @@ func TestRecurrenceRejectUnsafeRuleEdit(t *testing.T) {
 	c, b := fixtureClient(t)
 	b.object.Data.Children[0].Props.SetText("EXDATE", "20200103")
 	var u EventUpdate
-	json.Unmarshal([]byte(`{"Recurrence":"FREQ=WEEKLY;COUNT=3"}`), &u)
+	if err := json.Unmarshal([]byte(`{"Recurrence":"FREQ=WEEKLY;COUNT=3"}`), &u); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.UpdateEvent(context.Background(), "/cal/fixture.ics", &u); err == nil {
 		t.Fatal("exception series edit accepted")
 	}
@@ -97,7 +103,9 @@ func TestRecurrenceUpdatedStartValidated(t *testing.T) {
 	c, b := fixtureClient(t)
 	b.object.Data.Children[0].Props.Get("DTSTART").SetDateTime(time.Date(2020, 1, 2, 10, 0, 0, 0, time.UTC))
 	var u EventUpdate
-	json.Unmarshal([]byte(`{"StartTime":"2020-02-01T10:00:00Z","Recurrence":"FREQ=DAILY;UNTIL=20200110T000000Z"}`), &u)
+	if err := json.Unmarshal([]byte(`{"StartTime":"2020-02-01T10:00:00Z","Recurrence":"FREQ=DAILY;UNTIL=20200110T000000Z"}`), &u); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.UpdateEvent(context.Background(), "/cal/fixture.ics", &u); err == nil {
 		t.Fatal("UNTIL before effective start accepted")
 	}

@@ -1,12 +1,10 @@
 package caldav
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -143,7 +141,7 @@ func NewClient(email, password string, opts ...ClientOptions) (*Client, error) {
 
 	httpClient := &http.Client{
 		Timeout:   opt.Timeout,
-		Transport: &debugTransport{inner: transport},
+		Transport: transport,
 	}
 
 	// Create basic auth HTTP client
@@ -580,27 +578,6 @@ func (c *Client) parseCalendarObject(obj *caldav.CalendarObject) (*Event, error)
 	}
 
 	return event, nil
-}
-
-// debugTransport logs REPORT requests and non-2xx responses to stderr (temporary diagnostic).
-type debugTransport struct{ inner http.RoundTripper }
-
-func (d *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Method == "REPORT" {
-		var body []byte
-		if req.Body != nil {
-			body, _ = io.ReadAll(req.Body)
-			req.Body = io.NopCloser(bytes.NewReader(body))
-		}
-		fmt.Fprintf(os.Stderr, "DEBUG-REPORT url=%s depth=%q ctype=%q body=%s\n", req.URL.String(), req.Header.Get("Depth"), req.Header.Get("Content-Type"), string(body))
-	}
-	resp, err := d.inner.RoundTrip(req)
-	if err == nil && req.Method == "REPORT" && resp.StatusCode >= 400 {
-		rb, _ := io.ReadAll(resp.Body)
-		resp.Body = io.NopCloser(bytes.NewReader(rb))
-		fmt.Fprintf(os.Stderr, "DEBUG-REPORT-RESP status=%d body=%s\n", resp.StatusCode, string(rb))
-	}
-	return resp, err
 }
 
 // primaryEvent prefers the series master, even when detached overrides appear first.

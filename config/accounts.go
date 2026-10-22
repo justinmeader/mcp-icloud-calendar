@@ -35,7 +35,7 @@ func LoadAccounts(cfg *Config) (map[string]Account, error) {
 		}, nil
 	}
 
-	data, err := os.ReadFile(accountsFile)
+	data, err := os.ReadFile(accountsFile) //nolint:gosec // Operator-configured ACCOUNTS_FILE intentionally permits absolute paths; not client input.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read accounts file %s: %w", accountsFile, err)
 	}

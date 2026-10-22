@@ -143,7 +143,7 @@ func loadCredential(envVar string) (string, error) {
 	val := os.Getenv(envVar)
 	if strings.HasPrefix(val, "file://") {
 		path := strings.TrimPrefix(val, "file://")
-		data, err := os.ReadFile(path) //nolint:gosec // Operator-configured file:// secret location intentionally permits absolute paths; not client input.
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("failed to read %s from file %s: %w", envVar, path, err)
 		}

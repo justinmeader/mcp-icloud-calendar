@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"time"
@@ -75,6 +76,10 @@ func (c *Client) rawQueryCalendar(ctx context.Context, calendarPath string, star
 
 	objects := make([]extcaldav.CalendarObject, 0, len(ms.Responses))
 	for _, r := range ms.Responses {
+		resourcePath, ok := reportResourcePath(req.URL, r.Href)
+		if !ok {
+			continue // Omit unusable hrefs without hiding valid sibling objects.
+		}
 		for _, ps := range r.Propstats {
 			data := strings.TrimSpace(ps.Prop.CalendarData)
 			if data == "" {
@@ -84,8 +89,51 @@ func (c *Client) rawQueryCalendar(ctx context.Context, calendarPath string, star
 			if err != nil {
 				continue // parseCalendarObject-level skip semantics; leave malformed objects out
 			}
-			objects = append(objects, extcaldav.CalendarObject{Path: r.Href, Data: cal})
+			objects = append(objects, extcaldav.CalendarObject{Path: resourcePath, Data: cal})
 		}
 	}
 	return objects, nil
+}
+
+// reportResourcePath converts a REPORT href into the plain calendar-scoped path
+// accepted by event tools. Check before resolving: ResolveReference would erase
+// traversal, and decoding first would turn encoded separators into real ones.
+func reportResourcePath(calendarURL *url.URL, href string) (string, bool) {
+	u, err := url.Parse(href)
+	if err != nil || u.Opaque != "" || u.User != nil || strings.ContainsAny(href, "?#") {
+		return "", false
+	}
+	escaped := strings.ToLower(u.EscapedPath())
+	if strings.Contains(escaped, "%2f") || strings.Contains(escaped, "%5c") || strings.ContainsAny(u.Path, "%?#\\") || ValidateCalendarPath(u.Path) != nil {
+		return "", false
+	}
+	for _, segment := range strings.Split(u.Path, "/") {
+		if segment == "." || segment == ".." {
+			return "", false
+		}
+	}
+	base := *calendarURL
+	base.Path = strings.TrimSuffix(base.Path, "/") + "/"
+	base.RawPath = ""
+	resolved := base.ResolveReference(u)
+	port := func(v *url.URL) string {
+		if p := v.Port(); p != "" {
+			return p
+		}
+		if strings.EqualFold(v.Scheme, "https") {
+			return "443"
+		}
+		return "80"
+	}
+	if !strings.EqualFold(resolved.Scheme, base.Scheme) || !strings.EqualFold(resolved.Hostname(), base.Hostname()) || port(resolved) != port(&base) {
+		return "", false
+	}
+	if !strings.HasPrefix(resolved.Path, base.Path) {
+		return "", false
+	}
+	resource := strings.TrimPrefix(resolved.Path, base.Path)
+	if ValidateEventID(resource) != nil || resource == "." {
+		return "", false
+	}
+	return resolved.Path, true
 }

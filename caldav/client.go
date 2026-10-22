@@ -382,15 +382,17 @@ func (c *Client) UpdateEvent(ctx context.Context, eventPath string, update *Even
 	}
 
 	if update.Recurrence != nil || update.StartTime != nil {
+		// Moving DTSTART changes occurrence identity just like replacing RRULE.
+		// Keep exception dates and detached overrides anchored to the stored series.
+		if hasRecurrenceExceptions(existingObj.Data) {
+			return fmt.Errorf("schedule changes on a series with exceptions or detached occurrences are unsupported")
+		}
 		rule := ""
 		if prop := vevent.Props.Get("RRULE"); prop != nil {
 			rule = prop.Value
 		}
 		if update.Recurrence != nil {
 			rule = *update.Recurrence
-			if hasRecurrenceExceptions(existingObj.Data) {
-				return fmt.Errorf("recurrence changes on a series with exceptions or detached occurrences are unsupported")
-			}
 		}
 		prop := vevent.Props.Get("DTSTART")
 		if prop == nil {

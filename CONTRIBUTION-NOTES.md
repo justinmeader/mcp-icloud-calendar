@@ -36,19 +36,36 @@ New recurring creation accepts an IANA zone; its default is TZ, or UTC if unset.
 
 ## Upstream process
 
-Contribution-branch verification on October 12, 2026: race tests, vet, build and
-golangci-lint 2.11.3 pass. Total statement coverage is 84.4%, above the 80% gate.
-Go 1.26.9 is selected in the toolchain, CI, release and Docker builder settings;
-jsonparser 1.1.2 and x/sys 0.44.0 address scanner findings. Govulncheck 1.9.0
-reports no vulnerabilities, including verbose package/module checks. Regression
-tests cover the actual REPORT projection and read decorators. Temporary diagnostic
-logging of REPORT bodies was removed. Gitleaks working-tree and full-history scans
-found no credentials; the added changes contain no private deployment coordinates.
-Two narrow gosec annotations explain existing operator-configured file reads;
-client-supplied resource paths continue to be validated.
+The October 12, 2026 staging checks are historical evidence, not current
+clearance. The October 22 review reproduced a raw REPORT href regression and an
+unsafe series-start change with recurrence exceptions; both now have regression
+coverage and fixes. REPORT paths are normalized to safe calendar-scoped paths,
+including same-origin absolute hrefs and escaped resource filenames. Moving a
+series start or changing its rule is rejected before mutation if exceptions or
+detached occurrences exist.
 
-These results supersede the initial 77.6% staging result. The contribution still
-awaits upstream scope discussion and has not been submitted or accepted as a PR.
+Recurrence expansion now caps yielded-candidate work including historical
+occurrences, bounds timeset allocation and selector sizes, and rejects unsafe
+stored intervals and nonstandard BYEASTER offsets. These limits do not bound the
+recurrence dependency's internal scan through empty periods in sparse or
+impossible schedules; they must not be described as a complete CPU-time bound.
+
+The feature candidate preserves upstream dependency, toolchain, CI, release,
+Docker and configuration files exactly. Runtime/security maintenance is isolated
+on `maintenance/calendar-runtime-2026-10-22`: Go 1.26.10, the previously staged
+jsonparser/x/sys fixes, and explicit explanations for operator-controlled file
+reads flagged by the current linter. The combined, tested fork version is on
+`dogfood/calendar-enhancements`; using that branch name does not establish what
+commit is deployed. Read-only live connector checks confirm the custom tools
+are available, but the exact container/source provenance and rollout require
+infrastructure access.
+
+Verification is reported separately for the feature candidate and the combined
+fork version. The base-only feature candidate encounters the existing config
+file-read lint findings and dependency scan findings; the maintenance branch
+addresses those separately. The upstream discussion remains pending, and no
+feature PR has been opened. Larger features should be split by direct reads,
+reminders and recurrence after the maintainer agrees on scope.
 
 The upstream README asks for an issue discussing larger changes before a PR.
 Use that discussion to agree on scope and split this staging branch into focused
